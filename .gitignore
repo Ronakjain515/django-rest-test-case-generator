@@ -1,0 +1,5 @@
+manage.py
+django_rest_test_case_generator/
+dist/
+MANIFEST.in
+db.sqlite3
