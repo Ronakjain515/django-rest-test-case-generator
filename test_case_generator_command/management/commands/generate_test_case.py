@@ -16,7 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.urls.resolvers import RoutePattern, RegexPattern
 
 
-class GenerateTestCaseCommand(BaseCommand):
+class Command(BaseCommand):
     help = "Generate test cases for django rest views."
 
     def __init__(self):
