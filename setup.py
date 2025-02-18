@@ -22,13 +22,7 @@ setup(
         "Operating System :: OS Independent",
     ],
     license="MIT",
-    # package_dir = {"": "src"},
-    packages = [
-        "test_case_generator_command",
-        "test_case_generator_command.migrations",
-        "test_case_generator_command.management",
-        "test_case_generator_command.management.commands",
-    ],
+    packages=find_packages(include=["test_case_generator_command", "test_case_generator_command.*"]),
     install_requires=[
           'faker',
           'astor',
