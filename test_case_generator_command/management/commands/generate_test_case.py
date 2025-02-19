@@ -57,6 +57,7 @@ class Command(BaseCommand):
         obj,
         fetch_required_fields=True,
         is_login_user=False,
+        is_wrong_data=False
     ):
         """Method is used to generate payload dict by using model obj."""
         fields = obj._meta.get_fields()
@@ -100,22 +101,34 @@ class Command(BaseCommand):
                         fields_payload[field.name] = self.login_password_value
                     else:
                         if isinstance(field, models.EmailField):
-                            fields_payload[field.name] = self.fake.email()
+                            if not is_wrong_data:
+                                fields_payload[field.name] = self.fake.email()
+                            else:
+                                fields_payload[field.name] = self.fake.full_name()
                         elif isinstance(field, models.CharField):
-                            max_length = (
-                                field.max_length
-                                if hasattr(field, "max_length")
-                                else 100
-                            )
-                            fields_payload[field.name] = self.fake.sentence()[
-                                :max_length
-                            ].rstrip(".")
+                            if not is_wrong_data:
+                                max_length = (
+                                    field.max_length
+                                    if hasattr(field, "max_length")
+                                    else 100
+                                )
+                                fields_payload[field.name] = self.fake.sentence()[
+                                    :max_length
+                                ].rstrip(".")
+                            else:
+                                fields_payload[field.name] = ""
                         elif isinstance(field, models.BooleanField):
-                            fields_payload[field.name] = True
+                            if not is_wrong_data:
+                                fields_payload[field.name] = True
+                            else:
+                                fields_payload[field.name] = "true"
                         elif isinstance(field, models.DateTimeField):
-                            fields_payload[field.name] = (
-                                self.fake.date_time().isoformat()
-                            )
+                            if not is_wrong_data:
+                                fields_payload[field.name] = (
+                                    self.fake.date_time().isoformat()
+                                )
+                            else:
+                                fields_payload[field.name] = str(self.fake.date())
                         else:
                             fields_payload[field.name] = {}
         return fields_payload
@@ -513,7 +526,7 @@ class Command(BaseCommand):
             with open(file_dir, "w") as file:
                 file.write(modified_code)
 
-    def setup_method(self, reverse_url_name, supported_methods, full_url, test_case_api_class, tree, test_file_dir, is_auth_required):
+    def setup_method(self, reverse_url_name, tree, test_file_dir, is_auth_required, model_name, model_obj):
         """
         Method to define and definition for the setup method.
         """
@@ -546,24 +559,9 @@ class Command(BaseCommand):
             ),
         )
 
-        http_request = HttpRequest()
-        http_request.method = supported_methods[0]
-        http_request.META = {"HTTP_USER_AGENT": "Mozilla/5.0"}
-        http_request.url = full_url
-        http_request.query_params = {}
-        http_request.data = {}
-        model_obj = None
-        model_name = ""
-        view_class = test_case_api_class.callback.view_class()
-        view_class.request = http_request
-        try:
-            if hasattr(view_class.get_serializer_class(), "Meta"):
-                model_obj = view_class.get_serializer_class().Meta.model
-            elif isinstance(view_class.get_queryset(), QuerySet):
-                model_obj = view_class.get_queryset().model
-            model_name = model_obj.__name__
+        if model_obj:
             model_payload = self.generate_payload_using_model(model_obj)
-        except AssertionError:
+        else:
             model_payload = {}
 
         assign_test_data_variable_node = ast.Assign(
@@ -580,13 +578,17 @@ class Command(BaseCommand):
             ),
         )
 
-        self.add_from_import_statement(tree, model_name, ".models", test_file_dir)
+        if model_obj:
+            self.add_from_import_statement(tree, model_name, ".models", test_file_dir)
         assign_test_model_instance_node = ast.Assign(
             targets=[ast.Attribute(
                 value=ast.Name(id='self', ctx=ast.Load()),
                 attr="test_model_instance",
                 ctx=ast.Store())],
-            value=ast.Name(id=model_name, ctx=ast.Load())
+            value=ast.Name(
+                id=model_name if model_obj else "None",
+                ctx=ast.Load()
+            )
         )
 
         assign_test_model_node = ast.Assign(
@@ -601,7 +603,7 @@ class Command(BaseCommand):
                     ctx=ast.Load()),
                 args=[],
                 keywords=[ast.keyword(arg=None, value=ast.Name(id='self.test_data', ctx=ast.Load()))]
-            )
+            ) if model_obj else ast.Constant(value="None")
         )
 
         call_auth_login_node = ast.Expr(value=ast.Name(id="", ctx=ast.Load()))
@@ -865,7 +867,7 @@ class Command(BaseCommand):
         if is_auth_required:
             method_list_test_case_comment = ast.Expr(
                 value=ast.Constant(
-                    value=f"Method to write a test case for the {test_case_name} to test the empty list data.",
+                    value=f"Method to write a test case for the {test_case_name} to test the list data without authentication.",
                 ),
             )
             logout_node = ast.Expr(
@@ -927,7 +929,7 @@ class Command(BaseCommand):
             )
 
             method_node_list.append(ast.FunctionDef(
-                name=f"test_get_{test_case_name}_list_authenticated",
+                name=f"test_get_{test_case_name}_without_authenticated",
                 args=method_get_test_case_args,
                 body=[
                     method_list_test_case_comment,
@@ -941,12 +943,292 @@ class Command(BaseCommand):
 
         return method_node_list
 
-    def create_method_test_case(self, test_case_name, is_auth_required):
+    def create_method_test_case(self, test_case_name, is_auth_required, model_obj):
         """
         Method to create test case for the create method.
         """
         # list for the methods node to return.
         method_node_list = []
+
+        method_create_test_case_args = ast.arguments(
+            args=[ast.arg(arg="self", annotation=None)],
+            vararg=None,
+            kwonlyargs=[],
+            kw_defaults=[],
+            posonlyargs=[],
+            defaults=[],
+        )
+
+        # create test case method.
+        method_create_test_case_comment = ast.Expr(
+            value=ast.Constant(
+                value=f"Method to write a test case for the {test_case_name} to test the create data.",
+            ),
+        )
+        assign_api_call_node = ast.Assign(
+            targets=[ast.Name(id='response', ctx=ast.Store())],
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='client',
+                        ctx=ast.Load()
+                    ),
+                    attr='post',
+                    ctx=ast.Load()
+                ),
+                args=[
+                    ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='url',
+                        ctx=ast.Load()
+                    ),
+                    ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='test_data',
+                        ctx=ast.Load()
+                    )
+                ],
+                keywords=[]
+            )
+        )
+
+        response_status_check_node = ast.Expr(
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id='self', ctx=ast.Load()),
+                    attr='assertEqual',
+                    ctx=ast.Load()
+                ),
+                args=[
+                    ast.Attribute(
+                        value=ast.Name(id='response', ctx=ast.Load()),
+                        attr='status_code',
+                        ctx=ast.Load()
+                    ),
+                    ast.Attribute(
+                        value=ast.Name(id='status', ctx=ast.Load()),
+                        attr='HTTP_201_CREATED',
+                        ctx=ast.Load()
+                    )
+                ],
+                keywords=[]
+            )
+        )
+
+        response_assert_equal_1_node = ast.Expr(
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id='self', ctx=ast.Load()),
+                    attr='assertEqual',
+                    ctx=ast.Load()
+                ),
+                args=[
+                    ast.Call(
+                        func=ast.Name(id='len', ctx=ast.Load()),
+                        args=[
+                            ast.Attribute(
+                                value=ast.Name(id='response', ctx=ast.Load()),
+                                attr='data',
+                                ctx=ast.Load()
+                            )
+                        ],
+                        keywords=[]
+                    ),
+                    ast.Constant(value=2)
+                ],
+                keywords=[]
+            )
+        )
+
+        method_node_list.append(ast.FunctionDef(
+            name=f"test_create_{test_case_name}_data",
+            args=method_create_test_case_args,
+            body=[
+                method_create_test_case_comment,
+                assign_api_call_node,
+                response_status_check_node,
+                response_assert_equal_1_node,
+            ],
+            decorator_list=[],
+            lineno=1,
+        ))
+
+        # invalid payload create test case method.
+        method_create_test_case_comment = ast.Expr(
+            value=ast.Constant(
+                value=f"Method to write a test case for the {test_case_name} to test the invalid payload data.",
+            ),
+        )
+
+        if model_obj:
+            model_payload = self.generate_payload_using_model(model_obj, is_wrong_data=True)
+        else:
+            model_payload = {}
+
+        assign_test_invalid_data_variable_node = ast.Assign(
+            targets=[
+                ast.Attribute(
+                    value=ast.Name(id="self", ctx=ast.Load()),
+                    attr="invalid_test_data",
+                    ctx=ast.Store(),
+                ),
+            ],
+            value=ast.Dict(
+                keys=[ast.Constant(value=k) for k in model_payload.keys()],
+                values=[ast.Constant(value=v) for v in model_payload.values()],
+            ),
+        )
+
+        assign_api_call_node = ast.Assign(
+            targets=[ast.Name(id='response', ctx=ast.Store())],
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='client',
+                        ctx=ast.Load()
+                    ),
+                    attr='post',
+                    ctx=ast.Load()
+                ),
+                args=[
+                    ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='url',
+                        ctx=ast.Load()
+                    ),
+                    ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='invalid_test_data',
+                        ctx=ast.Load()
+                    )
+                ],
+                keywords=[]
+            )
+        )
+
+        response_status_check_node = ast.Expr(
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id='self', ctx=ast.Load()),
+                    attr='assertEqual',
+                    ctx=ast.Load()
+                ),
+                args=[
+                    ast.Attribute(
+                        value=ast.Name(id='response', ctx=ast.Load()),
+                        attr='status_code',
+                        ctx=ast.Load()
+                    ),
+                    ast.Attribute(
+                        value=ast.Name(id='status', ctx=ast.Load()),
+                        attr='HTTP_400_BAD_REQUEST',
+                        ctx=ast.Load()
+                    )
+                ],
+                keywords=[]
+            )
+        )
+
+        method_node_list.append(ast.FunctionDef(
+            name=f"test_create_invalid_{test_case_name}_data",
+            args=method_create_test_case_args,
+            body=[
+                method_create_test_case_comment,
+                assign_test_invalid_data_variable_node,
+                assign_api_call_node,
+                response_status_check_node,
+            ],
+            decorator_list=[],
+            lineno=1,
+        ))
+
+        # get list without authenticated.
+        if is_auth_required:
+            method_create_test_case_comment = ast.Expr(
+                value=ast.Constant(
+                    value=f"Method to write a test case for the {test_case_name} to test the payload data without authentication.",
+                ),
+            )
+            logout_node = ast.Expr(
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='client',
+                            ctx=ast.Load()
+                        ),
+                        attr='logout',
+                        ctx=ast.Load()
+                    ),
+                    args=[],
+                    keywords=[]
+                )
+            )
+            assign_api_call_node = ast.Assign(
+                targets=[ast.Name(id='response', ctx=ast.Store())],
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='client',
+                            ctx=ast.Load()
+                        ),
+                        attr='post',
+                        ctx=ast.Load()
+                    ),
+                    args=[
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='url',
+                            ctx=ast.Load()
+                        ),
+                        ast.Attribute(
+                            value=ast.Name(id='self', ctx=ast.Load()),
+                            attr='test_data',
+                            ctx=ast.Load()
+                        ),
+                    ],
+                    keywords=[]
+                )
+            )
+
+            response_status_check_node = ast.Expr(
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id='self', ctx=ast.Load()),
+                        attr='assertEqual',
+                        ctx=ast.Load()
+                    ),
+                    args=[
+                        ast.Attribute(
+                            value=ast.Name(id='response', ctx=ast.Load()),
+                            attr='status_code',
+                            ctx=ast.Load()
+                        ),
+                        ast.Attribute(
+                            value=ast.Name(id='status', ctx=ast.Load()),
+                            attr='HTTP_401_UNAUTHORIZED',
+                            ctx=ast.Load()
+                        )
+                    ],
+                    keywords=[]
+                )
+            )
+
+            method_node_list.append(ast.FunctionDef(
+                name=f"test_create_{test_case_name}_without_authenticated",
+                args=method_create_test_case_args,
+                body=[
+                    method_create_test_case_comment,
+                    logout_node,
+                    assign_api_call_node,
+                    response_status_check_node,
+                ],
+                decorator_list=[],
+                lineno=1,
+            ))
 
         return method_node_list
 
@@ -1047,6 +1329,30 @@ class Command(BaseCommand):
                 if hasattr(test_case_api_class.callback.view_class, "retrieve") or (hasattr(test_case_api_class.callback.view_class, "get") and len(url_keywords.keys()) > 0):
                     supported_methods.append("retrieve")
 
+            supported_method_for_api = supported_methods[0]
+            supported_method_for_api = "delete" if supported_method_for_api == "destroy" else "post" if supported_method_for_api == "create" else "patch" if supported_method_for_api == "update" else "get" if supported_method_for_api == "list" or supported_method_for_api == "retrieve" else supported_method_for_api
+
+            http_request = HttpRequest()
+            http_request.method = supported_method_for_api
+            http_request.META = {"HTTP_USER_AGENT": "Mozilla/5.0"}
+            http_request.url = full_url
+            http_request.query_params = {}
+            http_request.data = {}
+            model_obj = None
+            model_name = ""
+            view_class = test_case_api_class.callback.view_class()
+            view_class.request = http_request
+            try:
+                if hasattr(view_class.get_serializer_class(), "Meta"):
+                    model_obj = view_class.get_serializer_class().Meta.model
+                elif isinstance(view_class.get_queryset(), QuerySet):
+                    model_obj = view_class.get_queryset().model
+
+                if model_obj:
+                    model_name = model_obj.__name__
+            except AssertionError:
+                pass
+
             # if tests.py not exists, then we need to create an empty tests.py file.
             if not os.path.isfile(test_file_dir):
                 with open(test_file_dir, "w"):
@@ -1084,7 +1390,7 @@ class Command(BaseCommand):
                 )
 
                 # setup method creation.
-                method_setup_node = self.setup_method(reverse_url_name, supported_methods, full_url, test_case_api_class, tree, test_file_dir, is_auth_required)
+                method_setup_node = self.setup_method(reverse_url_name, tree, test_file_dir, is_auth_required, model_name, model_obj)
                 class_node.body.append(method_setup_node)
 
                 for supported_method in supported_methods:
@@ -1093,7 +1399,7 @@ class Command(BaseCommand):
                         for method_node in method_node_list:
                             class_node.body.append(method_node)
                     if supported_method == "create":
-                        method_node_list = self.create_method_test_case(test_case_name_lower_case, is_auth_required)
+                        method_node_list = self.create_method_test_case(test_case_name_lower_case, is_auth_required, model_obj)
                         for method_node in method_node_list:
                             class_node.body.append(method_node)
                     if supported_method == "update":
