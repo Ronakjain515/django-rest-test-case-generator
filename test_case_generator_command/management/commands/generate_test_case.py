@@ -411,6 +411,10 @@ class Command(BaseCommand):
             if not app.startswith("django.")
             and os.path.isdir(os.path.join(self.project_dir, app.replace(".", "/")))
         ]
+        print("*** User created Django Apps found ***")
+        for i, user_created_app in enumerate(self.user_created_apps):
+            print(f"App {i+1}: {user_created_app}")
+        print()
 
     def filter_url_pattern_objs(self):
         """Method to filter all the url pattern objs from the user created apps and list down from urls.py"""
@@ -426,20 +430,23 @@ class Command(BaseCommand):
                 url_patterns.append(pattern)
 
         # Filter through all the matched URLs from user created apps.
+        print("*** Filtering all the Non Compatible APIs ***")
         matched_url_views = []
         for pattern in url_patterns:
             callback = pattern.callback
             if callback:
-                if hasattr(callback, "__module__") and hasattr(callback, "__name__"):
+                if hasattr(callback, 'view_class') and hasattr(callback, "__module__") and hasattr(callback, "__name__"):
                     # If it's a regular function or method, get module and function name
                     module_name = callback.__module__
                     module_name = module_name.split(".")[0]
                     if module_name in self.user_created_apps:
                         matched_url_views.append(pattern)
                 else:
-                    print(f"URL: {pattern.pattern}, Callback is a non-standard view")
+                    print(f"URL: {pattern.pattern}, API is a non-standard class based view: Skipping")
             else:
-                print(f"URL: {pattern.pattern}, No view associated")
+                print(f"URL: {pattern.pattern}, No view associated: Skipping")
+
+        print()
 
         self.matched_url_pattern_objs = matched_url_views
 
@@ -1261,6 +1268,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         """This Method will handle all the major business logic for the command."""
+
+        # check if BASE_DIR is correctly set or not.
+        expected_base_dir_file = os.path.join(settings.BASE_DIR, 'manage.py')
+        if not os.path.exists(expected_base_dir_file):
+            print(f"BASE_DIR might be incorrect, it should be pointing to the root folder of your project: {settings.BASE_DIR}")
+            return False
+
         # create utils - base test case file.
         self.generate_base_test_case_class()
 
@@ -1271,6 +1285,7 @@ class Command(BaseCommand):
         self.filter_url_pattern_objs()
 
         # Looping through all the matched url pattern objs so that we can create test case for each of them.
+        print("*** Test cases created for these APIs ***")
         for test_case_api_class in self.matched_url_pattern_objs:
             # initiating all the important variables.
             module_name = test_case_api_class.callback.__module__
@@ -1414,6 +1429,8 @@ class Command(BaseCommand):
                         method_node_list = self.destroy_method_test_case(test_case_name_lower_case, is_auth_required)
                         for method_node in method_node_list:
                             class_node.body.append(method_node)
+
+                print(f"URL: {api_name}, Test cases created")
 
                 # combining class and method node and write on the file.
                 tree.body.append(class_node)
