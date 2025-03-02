@@ -6,7 +6,7 @@ with open("README.md", "r", encoding = "utf-8") as fh:
 
 setup(
     name = "django_rest_test_case_generator",
-    version = "0.1.1",
+    version = "0.2.1",
     author = "Ronak Jain",
     author_email = "jronak515@gmail.com",
     description = "Django command to generate test case for rest apis.",
